@@ -5,11 +5,46 @@ const mongoose = require("mongoose");
 const asyncHandler = require("express-async-handler");
 const dotenv = require("dotenv");
 dotenv.config();
+const multer = require("multer");
+const path = require("path");
 
 const app = express();
 //?Middle wair
 app.use(cors({ origin: "*" }));
 app.use(bodyParser.json());
+
+// Set up storage configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/"); // Ensure this folder exists
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); // Unique filename
+  },
+});
+
+// File filter (Allow only images)
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith("image/")) {
+    cb(null, true);
+  } else {
+    cb(new Error("Only images are allowed"), false);
+  }
+};
+
+// Initialize multer
+const upload = multer({ storage: storage, fileFilter: fileFilter });
+// Profile Image Upload Route
+app.post("/upload-profile", upload.single("profileImage"), (req, res) => {
+  console.log("Request received:", req.file); // Debugging line
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
+  res.json({
+    message: "File uploaded successfully",
+    imageUrl: `http://localhost:3000/uploads/${req.file.filename}`,
+  });
+});
 //? setting static folder path
 app.use("/image/products", express.static("public/products"));
 app.use("/image/category", express.static("public/category"));
@@ -34,6 +69,7 @@ app.use("/users", require("./routes/user"));
 app.use("/orders", require("./routes/order"));
 app.use("/payment", require("./routes/payment"));
 app.use("/notification", require("./routes/notification"));
+app.use("/uploads", express.static("uploads"));
 
 // Example route using asyncHandler directly in app.js
 app.get(

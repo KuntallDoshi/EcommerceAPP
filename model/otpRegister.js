@@ -1,12 +1,9 @@
 const mongoose = require("mongoose");
 
-const otpRegisterSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  phoneNumber: { type: String, required: true, unique: true }, // Ensure phoneNumber is unique
+const otpSchema = new mongoose.Schema({
+  mobile: { type: String, required: true, unique: true },
   otp: { type: String, required: true },
-  otpExpires: { type: Date, required: true },
+  createdAt: { type: Date, default: Date.now, expires: 300 }, // Auto-delete after 5 min
 });
 
-const OtpRegister = mongoose.model("OtpRegister", otpRegisterSchema);
-
-module.exports = OtpRegister;
+module.exports = mongoose.model("OTP", otpSchema);

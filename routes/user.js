@@ -2,122 +2,78 @@ const express = require("express");
 const asyncHandler = require("express-async-handler");
 const router = express.Router();
 const User = require("../model/user");
-const sendOtp = require("../utils/otpService");
-const OtpRegister = require("../model/otpRegister");
+const OTP = require("../model/otpRegister");
+const axios = require("axios");
+const https = require("https");
+require("dotenv").config();
+const UserVerification = require("../model/userVerification");
 
-//Otp Register
+// ✅ SEND OTP API
 router.post("/send-otp", async (req, res) => {
-  const { name, phoneNumber } = req.body;
-
-  if (!name || !phoneNumber) {
-    return res.status(400).json({
-      success: false,
-      message: "Name and phone number are required.",
-    });
-  }
-
   try {
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpires = new Date(Date.now() + 5 * 60 * 1000);
+    const { mobile } = req.body;
+    if (!mobile)
+      return res.status(400).json({ message: "Mobile number is required" });
 
-    console.log("🔹 Checking if phone number exists in database...");
-    let otpRecord = await OtpRegister.findOne({ phoneNumber });
+    const otp = Math.floor(100000 + Math.random() * 900000); // Generate 6-digit OTP
+    console.log(`Generated OTP for ${mobile}: ${otp}`); // Debug OTP
 
-    if (otpRecord) {
-      console.log("🔹 Existing OTP record found, updating...");
-      otpRecord.otp = otp;
-      otpRecord.otpExpires = otpExpires;
-      await otpRecord.save();
-      console.log("✅ OTP updated in MongoDB:", otpRecord);
-    } else {
-      console.log("🔹 No existing OTP record, creating a new entry...");
-      otpRecord = new OtpRegister({ name, phoneNumber, otp, otpExpires });
-      await otpRecord.save();
-      console.log("✅ New OTP record saved in MongoDB:", otpRecord);
-    }
+    // ✅ Store OTP in MongoDB (Replace existing if any)
+    await OTP.findOneAndUpdate(
+      { mobile },
+      { otp, createdAt: new Date() },
+      { upsert: true }
+    );
 
-    // Retrieve latest OTP from database
-    const latestOtpRecord = await OtpRegister.findOne({ phoneNumber });
+    // ✅ Construct SMS API URL
+    const smsApiUrl = `${process.env.SMS_API_URL}?username=${process.env.SMS_USERNAME}&apikey=${process.env.SMS_APIKEY}&senderid=${process.env.SMS_SENDERID}&route=${process.env.SMS_ROUTE}&mobile=${mobile}&text=Your verification code is ${otp} for https://bhatiamobile.com`;
 
-    // Send OTP via Twilio
-    const otpResponse = await sendOtp(phoneNumber, otp);
+    const agent = new https.Agent({ rejectUnauthorized: false });
+    const response = await axios.get(smsApiUrl, { httpsAgent: agent });
 
-    if (!otpResponse || !otpResponse.success) {
+    console.log("SMS API Response:", response.data); // Debug API response
+
+    if (response.data.includes("Failed") || response.data.includes("error")) {
       return res
         .status(500)
-        .json({ success: false, message: "Failed to send OTP." });
+        .json({ message: "SMS API Error", details: response.data });
     }
 
-    return res.status(200).json({
-      success: true,
-      message: "OTP sent successfully.",
-      otp: latestOtpRecord.otp,
-      phoneNumber: latestOtpRecord.phoneNumber,
-    });
+    res.json({ message: "OTP sent successfully", mobile });
   } catch (error) {
-    console.error("❌ Error saving OTP in MongoDB:", error);
-    return res
+    console.error("Error sending OTP:", error.message);
+    res
       .status(500)
-      .json({ success: false, message: "Failed to send OTP." });
+      .json({ message: "Failed to send OTP", error: error.message });
   }
 });
-
-// Verify OTP Route
+// ✅ VERIFY OTP API (Without JWT)
 router.post("/verify-otp", async (req, res) => {
-  const { name, phoneNumber, otp } = req.body;
-
-  if (!name || !phoneNumber || !otp) {
-    return res.status(400).json({
-      success: false,
-      message: "Name, phone number, and OTP are required.",
-    });
-  }
-
   try {
-    // Find OTP record from database
-    const otpRecord = await OtpRegister.findOne({ phoneNumber, name });
+    const { mobile, otp } = req.body;
 
-    if (!otpRecord) {
-      return res.status(400).json({
-        success: false,
-        message: "OTP not found for this phone number and name.",
-      });
+    if (!mobile || !otp) {
+      return res.status(400).json({ message: "Mobile and OTP are required" });
     }
 
-    // Check if OTP is expired
-    if (new Date() > otpRecord.otpExpires) {
-      return res
-        .status(400)
-        .json({ success: false, message: "OTP has expired." });
+    const record = await OTP.findOne({ mobile });
+    if (!record) {
+      return res.status(400).json({ message: "OTP expired or not found" });
     }
 
-    // Check if OTP matches
-    if (otpRecord.otp !== otp) {
-      return res.status(400).json({ success: false, message: "Invalid OTP." });
+    if (record.otp !== otp) {
+      return res.status(400).json({ message: "Invalid OTP" });
     }
 
-    // OTP verified successfully
-    res.json({ success: true, message: "OTP verified successfully." });
+    // ✅ OTP is correct, delete it from the database
+    await OTP.deleteOne({ mobile });
 
-    // Optionally, remove OTP record from the database after successful verification
-    await OtpRegister.deleteOne({ phoneNumber });
+    res.json({ message: "OTP verified successfully" });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Failed to verify OTP." });
-  }
-});
-
-//Get OtpRegister Users
-router.get("/get-otp-users", async (req, res) => {
-  try {
-    const users = await OtpRegister.find(
-      {},
-      { name: 1, phoneNumber: 1, _id: 1 }
-    ); // Fetch users without OTP
-    res.json({ success: true, users });
-  } catch (error) {
-    console.error("Error fetching OTP registered users:", error);
-    res.status(500).json({ success: false, message: "Failed to fetch users." });
+    console.error("Error verifying OTP:", error.message);
+    res
+      .status(500)
+      .json({ message: "Failed to verify OTP", error: error.message });
   }
 });
 
@@ -140,11 +96,11 @@ router.get(
 
 // login
 router.post("/login", async (req, res) => {
-  const { name, password } = req.body;
+  const { email, password } = req.body;
 
   try {
     // Check if the user exists
-    const user = await User.findOne({ name });
+    const user = await User.findOne({ email });
 
     if (!user) {
       return res
@@ -194,21 +150,21 @@ router.get(
 router.post(
   "/register",
   asyncHandler(async (req, res) => {
-    const { name, password } = req.body;
-    if (!name || !password) {
+    const { name, email, password } = req.body;
+    if (!email || !name || !password) {
       return res
         .status(400)
         .json({ success: false, message: "Name, and password are required." });
     }
-    const existingUser = await User.findOne({ name });
+    const existingUser = await User.findOne({ email });
 
     if (existingUser) {
       return res.status(409).json({ error: "User already exists" });
     }
 
     try {
-      const user = new User({ name, password });
-      const newUser = await user.save();
+      const user = new User({ email, name, password });
+      const newUser = await user.save().then((result) => {});
       res.json({
         success: true,
         message: "User created successfully.",
@@ -219,7 +175,7 @@ router.post(
     }
   })
 );
-10;
+
 // Update a user
 router.put(
   "/:id",
